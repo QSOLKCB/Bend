@@ -1,0 +1,17 @@
+{
+  "schema": "qsol.bend.baseline.v1",
+  "source_repo": "bendlang/bend",
+  "source_commit": "9c586f094f4fc88bef440dc8b4d77a2f92c257cc",
+  "files": {
+    "AGENTS.md": "0d3b7c95aa9ad8e7e029fe3f6eba0a9f207293ba",
+    "README.md": "e5421d92d2caa561f2e71c439fa28910a7222799",
+    "LICENSE": "a20d4b8ab3ed6c76c1215488bd2d865cee1e57c4",
+    "gates/repo.ts": "013a9ebd999d57ccc7d3f8439f7a62800035b475",
+    "bend2/bend.ts": "193cd6f331ca17cfb0ca945cd363b6a996166ec6",
+    "bend2/comp.ts": "bec68f3d4e41636b815ba4cdf0933a4e1048b71d",
+    "bend2/main.ts": "247767b0c8053098906451312bd2026a85356e4b",
+    "bend2/safe.ts": "71dd2ea43c9844b01fadda1a2139c64a85e99c3c",
+    "bend2/base.bend": "cbbe089e64d1f0d8066f2f708150da158497d52f",
+    "bend2/bendtt.lean": "c14f2c553ac7471a99577d9a47f411b911ed5da7"
+  }
+}
