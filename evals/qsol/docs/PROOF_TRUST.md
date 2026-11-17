@@ -10,7 +10,7 @@ This study keeps the upstream TypeScript checker, translation code, Lean kernel,
 2. **Admissibility:** `cli_verdict` refuses `@unsafe` and foreign dependencies via `book_promises`. The kernel path is taken only with `--verdict` and no such unresolved promises.
 3. **Elaboration:** `bend2/safe.ts` implements `safe_book` / `safe_emit`, translating an accepted Bend book to BendTT. `safe_check` **fails** on out-of-scope definitions; `-o file.bendtt` exposes the translation but may omit out-of-scope definitions. The harness rejects an emitted file if the CLI reports diagnostics.
 4. **Kernel:** `safe_check` calls `kernel_check`, which invokes a separately built executable from `bend2/bendtt.lean` (or `BENDTT`). In Lean, `Book.parse` and `Book.check` return `ALL PROOFS CHECK` / `SOME PROOFS FAIL`. Upstream pins Lean **4.34.0** via `bend2/safe.ts`.
-5. **Independent invocation:** this harness asks Bend to emit BendTT twice, hashes both outputs, runs the supplied kernel on the exact emitted bytes, and appends an ill-typed BendTT canary to establish that the kernel rejects an altered intermediate input. It compares this direct result with Bend's `--verdict` result.
+5. **Independent invocation:** this harness asks Bend to emit BendTT twice, hashes both outputs, runs the supplied kernel on the exact emitted bytes, and appends an ill-typed BendTT canary to establish that the kernel rejects an altered intermediate input. It also substitutes a denial-only kernel for one `--verdict` call to check that the CLI actually fails when its kernel rejects a valid source. These exercises compare direct kernel behavior with Bend's `--verdict` route.
 
 **Crucial distinction:** independently invoking the **same BendTT kernel** on emitted text does **not** independently prove that `safe.ts` elaboration preserves the meaning of the Bend source. That semantic correspondence remains an explicit trusted boundary. Similarly, a compiled Lean kernel and the host toolchain remain trusted; source checks do not establish native/CUDA backend correctness.
 
@@ -24,6 +24,7 @@ This study keeps the upstream TypeScript checker, translation code, Lean kernel,
 | `tests/check/unsafe_loop.bend` | Unsafe promise boundary | `--verdict` refused for unsafe dependency |
 | Appended `QSOL_unsound: *1 = {==}` to each emitted book | Ill-typed, **parseable** BendTT added after elaboration | Direct kernel returns `SOME PROOFS FAIL` |
 | Repeat emission of each positive | Check deterministic elaboration | Byte-identical SHA-256 |
+| Denial-only kernel substituted through `BENDTT` | Check `--verdict` cannot ignore a rejecting kernel | CLI rejects valid source with injected diagnostic |
 
 The canary demonstrates a fail-closed negative input; it is not an exhaustive proof of kernel soundness or evidence that the original Bend source is false. The proof content is intentionally small, which makes failures attributable.
 
