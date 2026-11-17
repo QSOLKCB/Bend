@@ -55,10 +55,10 @@ When `--kernel` is supplied, its SHA-256 is recorded but its compilation lineage
 - Exact source HEAD and BEND-QSOL-001 pinned reference commit, plus source-baseline result;
 - SHA-256 of each input fixture, emitted BendTT, repeated translation, and poisoned BendTT;
 - Bun version, kernel executable SHA-256, and optionally Lean toolchain and source hashes;
-- Actual subprocess argv, exit code, wall-clock duration, timeouts and bounded stdout/stderr excerpts, plus full-output SHA-256 digests;
+- Actual subprocess argv, exit code, wall-clock duration, timeouts and bounded stdout/stderr excerpts, plus SHA-256 digests of captured output bytes (partial if a process is killed at the cap);
 - Per-step expectations/results and a receipt-wide PASS/FAIL with a canonical JSON SHA-256.
 
-A timeout, missing tool, incompatible version, source drift, unexpected stderr, missing translation, unexpected kernel acceptance, or mismatched translation fails the experiment. Failure receipts are written to the new output directory. SHA-256 records are **integrity hashes, not cryptographic signatures**.
+A timeout, missing tool, incompatible version, source drift, unexpected stderr, missing translation, unexpected kernel acceptance, **non-specific error on the false-equality case**, **output exceeding 1 MiB**, or mismatched translation fails the experiment. Failure receipts are written to the new output directory. SHA-256 records are **integrity hashes, not cryptographic signatures**.
 
 The original `qsol-baseline` GitHub job discovers the new `test_proof_audit.py` unit tests with stdlib Python. Those unit tests include **simulated fake toolchains** and never substitute for running the real Bend and Lean commands. The actual integration requires an installed toolchain; if the fork has no Actions runs, do not label the semantic tests as CI-proven.
 
