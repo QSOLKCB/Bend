@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 import baseline
@@ -69,34 +70,54 @@ def regular(root, rel):
 
 
 def run(command, *, cwd, env, timeout=60):
-    """Capture a bounded, inspectable subprocess result; kill descendants on timeout."""
+    """Run with bounded memory, output digests and process-group timeout."""
     start = time.monotonic()
-    proc = subprocess.Popen(
-        [str(arg) for arg in command], cwd=cwd, env=env,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, start_new_session=(os.name == "posix"),
-    )
-    timed_out = False
-    try:
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:
-            proc.kill()
-        out, err = proc.communicate()
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        proc = subprocess.Popen(
+            [str(arg) for arg in command], cwd=cwd, env=env,
+            stdin=subprocess.DEVNULL, stdout=output, stderr=errors,
+            start_new_session=(os.name == "posix"),
+        )
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            if os.name == "posix":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.kill()
+            proc.wait()
+        output.flush()
+        errors.flush()
+
+        def details(stream):
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(0)
+            preview = stream.read(3000).decode("utf-8", errors="replace")
+            stream.seek(0)
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+            return size, preview, digest.hexdigest()
+
+        size_out, out, hash_out = details(output)
+        size_err, err, hash_err = details(errors)
     return {
         "argv": [str(x) for x in command],
         "exit_code": proc.returncode,
         "timeout": timed_out,
         "duration_ms": round((time.monotonic() - start) * 1000),
-        "stdout_sha256": sha256(out),
-        "stderr_sha256": sha256(err),
-        "stdout": out[:3000].decode("utf-8", errors="replace"),
-        "stderr": err[:3000].decode("utf-8", errors="replace"),
-        "truncated": len(out) > 3000 or len(err) > 3000,
-        "output_over_limit": len(out) + len(err) > MAX_OUTPUT,
+        "stdout_sha256": hash_out,
+        "stderr_sha256": hash_err,
+        "stdout": out,
+        "stderr": err,
+        "truncated": size_out > 3000 or size_err > 3000,
+        "output_over_limit": size_out + size_err > MAX_OUTPUT,
     }
 
 
@@ -165,6 +186,7 @@ def execute(root, out, bun, kernel, lean, leanc, *, build_kernel=False, timeout)
             raise AuditError("Bun executable not found: " + bun)
         v = run([exe, "--version"], cwd=root, env=env, timeout=timeout)
         rec["toolchains"]["bun_version"] = v["stdout"].strip()
+        rec["toolchains"]["bun_executable_sha256"] = file_hash(exe)
         if v["timeout"] or v["exit_code"] != 0 or v["stdout"].strip() != BUN_VERSION:
             raise AuditError("Bun version must equal " + BUN_VERSION)
         if build_kernel or lean:
