@@ -24,8 +24,12 @@ class ProofAuditUnitTests(unittest.TestCase):
         self.assertFalse(audit.accepted(r | {"output_over_limit": True}, "kernel-reject"))
         self.assertFalse(audit.accepted(r, "forced-deny"))
         self.assertTrue(audit.accepted(r | {"stderr": "QSOL forced kernel denial"}, "forced-deny"))
-        self.assertTrue(audit.accepted(r, "source-reject"))
-        self.assertFalse(audit.accepted(r | {"stdout": "SOME PROOFS FAIL\nBendTT infrastructure"}, "source-reject"))
+        self.assertFalse(audit.accepted(r, "source-reject"))
+        diagnostic = ("SOME PROOFS FAIL\nError:\n- expected : {0 == 1 : U32}\n"
+                      "- observed : non-inferrable term\nLocation: main")
+        self.assertTrue(audit.accepted(r | {"stdout": "", "stderr": diagnostic}, "source-reject"))
+        self.assertFalse(audit.accepted(r | {"stdout": "", "stderr":
+                        "SOME PROOFS FAIL\nError: missing import"}, "source-reject"))
 
     def test_receipt_seal_detects_mutation(self):
         record = {"schema": audit.SCHEMA, "verdict": "PASS", "source": "example"}
@@ -44,6 +48,25 @@ class ProofAuditUnitTests(unittest.TestCase):
             (root / "link.bend").symlink_to(root / "valid.bend")
             with self.assertRaises(audit.AuditError):
                 audit.regular(root, "link.bend")
+
+    def test_closed_pipes_cannot_bypass_timeout(self):
+        if os.name != "posix":
+            self.skipTest("POSIX process-group test")
+        with tempfile.TemporaryDirectory() as tmp:
+            command = [sys.executable, "-c",
+                       "import os,time; os.close(1); os.close(2); time.sleep(5)"]
+            result = audit.run(command, cwd=tmp, env=os.environ.copy(), timeout=0.1)
+            self.assertTrue(result["timeout"])
+            self.assertFalse(audit.accepted(result, "pass"))
+
+    def test_output_limit_kills_noisy_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            command = [sys.executable, "-c",
+                       "import sys; sys.stdout.write('X' * 3000000)"]
+            result = audit.run(command, cwd=tmp, env=os.environ.copy(), timeout=5)
+            self.assertTrue(result["output_over_limit"])
+            self.assertLessEqual(len(result["stdout"]), 3000)
+            self.assertFalse(audit.accepted(result, "pass"))
 
     def test_process_timeout_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -93,7 +116,8 @@ args = sys.argv[1:]
 if args == ["--version"]:
     print("1.4.0")
 elif any("false_reflexivity" in x for x in args):
-    print("SOME PROOFS FAIL\\nError: false equality", file=sys.stderr)
+    print("SOME PROOFS FAIL\\nError:\\n- expected : {0 == 1 : U32}"
+          "\\n- observed : non-inferrable term\\nLocation: main", file=sys.stderr)
     sys.exit(1)
 elif any("unsafe_loop" in x for x in args):
     print("SOME PROOFS FAIL\\nError: 1 def relies on unsafe or foreign code", file=sys.stderr)
