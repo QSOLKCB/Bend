@@ -35,3 +35,20 @@ jobs:
           git fetch --no-tags --depth=1 origin main
           git checkout FETCH_HEAD -- gates/
       - run: bun gates/repo.ts
+
+
+  # QSOL-IMC research overlay. Independent of the upstream repo-gate job.
+  # stdlib Python + Git only; no compiler execution or extra setup actions.
+  qsol-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: BENDOVR adversarial provenance tests
+        run: python3 -m unittest discover -s evals/qsol -p 'test_*.py' -v
+      - name: Verify original Bend source pins
+        run: python3 evals/qsol/baseline.py verify
