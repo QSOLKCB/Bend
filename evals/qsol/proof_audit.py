@@ -135,6 +135,10 @@ def accepted(result, mode):
         return result["exit_code"] == 1 and FAIL in output and "unsafe or foreign code" in output
     if mode == "kernel-reject":
         return result["exit_code"] == 1 and result["stdout"].startswith(FAIL + "\n") and not result["stderr"].strip()
+    if mode == "forced-deny":
+        return (result["exit_code"] == 1 and FAIL in output
+                and "QSOL forced kernel denial" in output
+                and "BendTT infrastructure" not in output)
     if mode == "exit-zero":
         return result["exit_code"] == 0
     if mode == "emit":
@@ -156,9 +160,9 @@ def execute(root, out, bun, kernel, lean, leanc, *, build_kernel=False, timeout)
            "toolchains": {}, "artifacts": {}, "errors": [],
            "host": {"os": platform.system(), "arch": platform.machine(),
                     "python": platform.python_version()}}
-    def step(label, command, expectation, *, cwd=root):
+    def step(label, command, expectation, *, cwd=root, run_env=None):
         try:
-            entry = run(command, cwd=cwd, env=env, timeout=timeout)
+            entry = run(command, cwd=cwd, env=env if run_env is None else run_env, timeout=timeout)
             entry["name"] = label
             entry["expectation"] = expectation
             entry["passed"] = accepted(entry, expectation)
@@ -247,6 +251,17 @@ def execute(root, out, bun, kernel, lean, leanc, *, build_kernel=False, timeout)
             poisoned.write_bytes(emit1.read_bytes() + KERNEL_CANARY)
             rec["artifacts"][poisoned.name] = file_hash(poisoned)
             step(name + ":kernel-canary", [kp, poisoned], "kernel-reject")
+        # Force Bend's CLI to run a denial-only kernel. A success here would
+        # indicate it bypassed the kernel or ignored its negative verdict.
+        denial = out / "deny_kernel"
+        denial.write_text("#!" + sys.executable + "\nimport sys\n"
+                          "print('SOME PROOFS FAIL\\nQSOL forced kernel denial')\n"
+                          "sys.exit(1)\n", encoding="utf-8")
+        denial.chmod(0o700)
+        rec["artifacts"][denial.name] = file_hash(denial)
+        step("verdict:forced-kernel-denial",
+             [exe, "bend2/main.ts", CASES[0][1], "--verdict"],
+             "forced-deny", run_env={**env, "BENDTT": str(denial)})
         step("false-reflexivity:source", [exe, "bend2/main.ts", NEGATIVE, "--check-only"], "source-reject")
         step("false-reflexivity:verdict", [exe, "bend2/main.ts", NEGATIVE, "--verdict"], "source-reject")
         step("unsafe-promise:verdict", [exe, "bend2/main.ts", UNSAFE, "--verdict"], "unsafe-reject")
