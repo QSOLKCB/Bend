@@ -66,7 +66,8 @@ def file_sha256(path):
 
 def collect(root, pins):
     # Resolve only the actual Git root: never trust a caller's relative CWD.
-    root = Path(git_text(root, "rev-parse", "--show-toplevel")).resolve()
+    # Repository paths use the filesystem encoding; Git object IDs remain ASCII.
+    root = Path(os.fsdecode(git(root, "rev-parse", "--show-toplevel")).removesuffix("\n")).resolve()
     head = git_text(root, "rev-parse", "--verify", "HEAD")
     tree = git_text(root, "rev-parse", "HEAD^{tree}")
     staged = git(root, "ls-files", "--stage", "-z")
