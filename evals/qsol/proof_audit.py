@@ -12,11 +12,11 @@ import os
 from pathlib import Path
 import platform
 import re
+import selectors
 import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 
 import baseline
@@ -70,67 +70,110 @@ def regular(root, rel):
 
 
 def run(command, *, cwd, env, timeout=60):
-    """Run with bounded memory, output digests and process-group timeout."""
+    """Drain stdout/stderr with a hard combined byte cap and a group deadline."""
     start = time.monotonic()
-    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
-        proc = subprocess.Popen(
-            [str(arg) for arg in command], cwd=cwd, env=env,
-            stdin=subprocess.DEVNULL, stdout=output, stderr=errors,
-            start_new_session=(os.name == "posix"),
-        )
-        timed_out = False
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            if os.name == "posix":
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            else:
+    proc = subprocess.Popen(
+        [str(arg) for arg in command], cwd=cwd, env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=(os.name == "posix"),
+    )
+    chunks = {"stdout": bytearray(), "stderr": bytearray()}
+    digests = {"stdout": hashlib.sha256(), "stderr": hashlib.sha256()}
+    totals = {"stdout": 0, "stderr": 0}
+    timed_out = False
+    output_over_limit = False
+    killed = False
+    killed_at = None
+
+    def terminate():
+        nonlocal killed, killed_at
+        if killed:
+            return
+        killed = True
+        killed_at = time.monotonic()
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.kill()
+
+    try:
+        with selectors.DefaultSelector() as sel:
+            for name, pipe in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+                sel.register(pipe, selectors.EVENT_READ, data=name)
+            while sel.get_map():
+                remaining = timeout - (time.monotonic() - start)
+                if remaining <= 0 and not killed:
+                    timed_out = True
+                    terminate()
+                ready = sel.select(timeout=0.1 if killed else max(0.0, min(remaining, 0.1)))
+                for key, _ in ready:
+                    name = key.data
+                    data = os.read(key.fileobj.fileno(), 65536)
+                    if not data:
+                        sel.unregister(key.fileobj)
+                        key.fileobj.close()
+                        continue
+                    totals[name] += len(data)
+                    digests[name].update(data)
+                    if len(chunks[name]) < 3000:
+                        chunks[name].extend(data[:3000 - len(chunks[name])])
+                    if totals["stdout"] + totals["stderr"] > MAX_OUTPUT:
+                        output_over_limit = True
+                        terminate()
+                if killed and time.monotonic() - killed_at > 3:
+                    # A subprocess could deliberately retain a pipe outside its
+                    # process group. Never wait forever for that pipe's EOF.
+                    break
+        if killed:
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait(timeout=3)
+        else:
+            try:
+                proc.wait(timeout=max(0.01, timeout - (time.monotonic() - start)))
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                terminate()
+                proc.wait(timeout=3)
+    finally:
+        for pipe in (proc.stdout, proc.stderr):
+            if not pipe.closed:
+                pipe.close()
+        if proc.poll() is None:
+            terminate()
             proc.wait()
-        output.flush()
-        errors.flush()
-
-        def details(stream):
-            stream.seek(0, os.SEEK_END)
-            size = stream.tell()
-            stream.seek(0)
-            preview = stream.read(3000).decode("utf-8", errors="replace")
-            stream.seek(0)
-            digest = hashlib.sha256()
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-            return size, preview, digest.hexdigest()
-
-        size_out, out, hash_out = details(output)
-        size_err, err, hash_err = details(errors)
     return {
         "argv": [str(x) for x in command],
         "exit_code": proc.returncode,
         "timeout": timed_out,
         "duration_ms": round((time.monotonic() - start) * 1000),
-        "stdout_sha256": hash_out,
-        "stderr_sha256": hash_err,
-        "stdout": out,
-        "stderr": err,
-        "truncated": size_out > 3000 or size_err > 3000,
-        "output_over_limit": size_out + size_err > MAX_OUTPUT,
+        "stdout_sha256": digests["stdout"].hexdigest(),
+        "stderr_sha256": digests["stderr"].hexdigest(),
+        "stdout": chunks["stdout"].decode("utf-8", errors="replace"),
+        "stderr": chunks["stderr"].decode("utf-8", errors="replace"),
+        "truncated": any(totals[name] > 3000 for name in totals),
+        "output_over_limit": output_over_limit,
     }
 
 
 def accepted(result, mode):
     if result["timeout"] or result["output_over_limit"]:
         return False
-    output = result["stdout"].strip() + "\n" + result["stderr"].strip()
+    output = "\n".join(part.strip() for part in (result["stdout"], result["stderr"]) if part.strip())
     if mode == "pass":
         return result["exit_code"] == 0 and result["stdout"].strip() == PASS and not result["stderr"].strip()
     if mode == "source-pass":
         return result["exit_code"] == 0 and result["stdout"].startswith(PASS + "\n") and not result["stderr"].strip()
     if mode == "source-reject":
-        return result["exit_code"] == 1 and FAIL in output and "BendTT infrastructure" not in output
+        return (result["exit_code"] == 1 and output.startswith(FAIL)
+                and "- expected :" in output and "- observed :" in output
+                and "{0 == 1 : U32}" in output and "Location: main" in output
+                and "stack overflow" not in output.lower())
     if mode == "unsafe-reject":
         return result["exit_code"] == 1 and FAIL in output and "unsafe or foreign code" in output
     if mode == "kernel-reject":
