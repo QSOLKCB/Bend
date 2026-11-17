@@ -52,6 +52,25 @@ class ProvenanceTests(unittest.TestCase):
         canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         self.assertEqual(seal, hashlib.sha256(canonical.encode()).hexdigest())
 
+    def test_unicode_checkout_path_works_in_both_cli_modes(self):
+        unicode_root = self.root.parent / "bend-é-測試"
+        self.root.rename(unicode_root)
+        self.root = unicode_root
+        pins = self.root.parent / "unicode-pins.json"
+        pins.write_text(json.dumps(self.pins), encoding="utf-8")
+        # Git object IDs remain ASCII even when the working directory is not.
+        self.assertEqual(audit.git_text(self.root, "rev-parse", "HEAD"), self.initial_head)
+        for mode in ("verify", "capture"):
+            with self.subTest(mode=mode):
+                receipt_path = self.root.parent / (mode + "-unicode.json")
+                self.assertEqual(
+                    audit.main([mode, "--repo", str(self.root), "--pins", str(pins),
+                                "--output", str(receipt_path)]), 0,
+                )
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                self.assertEqual(receipt["verdict"], "PASS")
+                self.assertEqual(receipt["head_commit"], self.initial_head)
+
     def test_dirty_worktree_detected_without_commit(self):
         self.code.write_text("tampered\n", encoding="utf-8")
         result = audit.collect(self.root, self.pins)
