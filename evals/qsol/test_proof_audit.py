@@ -22,6 +22,7 @@ class ProofAuditUnitTests(unittest.TestCase):
         self.assertFalse(audit.accepted(r | {"stderr": "panic"}, "kernel-reject"))
         self.assertFalse(audit.accepted(r | {"stdout": "Error: kernel missing"}, "kernel-reject"))
         self.assertFalse(audit.accepted(r | {"output_over_limit": True}, "kernel-reject"))
+        self.assertFalse(audit.accepted(r | {"truncated": True}, "kernel-reject"))
         self.assertFalse(audit.accepted(r, "forced-deny"))
         self.assertTrue(audit.accepted(r | {"stderr": "QSOL forced kernel denial"}, "forced-deny"))
         self.assertFalse(audit.accepted(r, "source-reject"))
@@ -48,6 +49,42 @@ class ProofAuditUnitTests(unittest.TestCase):
             (root / "link.bend").symlink_to(root / "valid.bend")
             with self.assertRaises(audit.AuditError):
                 audit.regular(root, "link.bend")
+
+    def test_long_diagnostic_cannot_be_hidden_beyond_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            command = [sys.executable, "-c",
+                       "import sys; print('ALL PROOFS CHECK'); "
+                       "sys.stderr.write(' ' * 3000 + 'panic: kernel failed')"]
+            result = audit.run(command, cwd=tmp, env=os.environ.copy(), timeout=5)
+            self.assertTrue(result["truncated"])
+            self.assertFalse(audit.accepted(result, "pass"))
+
+    def test_relative_executable_resolves_to_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake lean"
+            fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake.chmod(0o755)
+            original = os.getcwd()
+            try:
+                os.chdir(tmp)
+                got = audit.executable_path("./fake lean")
+                self.assertTrue(Path(got).is_absolute())
+                self.assertEqual(Path(got), fake)
+            finally:
+                os.chdir(original)
+
+    def test_leader_exit_still_kills_remaining_workers(self):
+        if os.name != "posix":
+            self.skipTest("POSIX group cleanup")
+        with tempfile.TemporaryDirectory() as tmp:
+            command = [sys.executable, "-c", (
+                "import subprocess,sys;"
+                "subprocess.Popen([sys.executable,'-c','import time;time.sleep(5)'],"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,"
+                "stdin=subprocess.DEVNULL);print('ALL PROOFS CHECK')")]
+            result = audit.run(command, cwd=tmp, env=os.environ.copy(), timeout=1)
+            self.assertTrue(result["surviving_group"])
+            self.assertFalse(audit.accepted(result, "pass"))
 
     def test_closed_pipes_cannot_bypass_timeout(self):
         if os.name != "posix":
