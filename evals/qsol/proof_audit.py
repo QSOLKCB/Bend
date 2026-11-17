@@ -84,6 +84,7 @@ def run(command, *, cwd, env, timeout=60):
     output_over_limit = False
     killed = False
     killed_at = None
+    surviving_group = False
 
     def terminate():
         nonlocal killed, killed_at
@@ -147,10 +148,24 @@ def run(command, *, cwd, env, timeout=60):
         if proc.poll() is None:
             terminate()
             proc.wait()
+        # The leader can exit 0 while a worker survives with its stdio
+        # redirected. A PASS receipt must not leave that worker running.
+        if os.name == "posix":
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                surviving_group = True
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
     return {
         "argv": [str(x) for x in command],
         "exit_code": proc.returncode,
         "timeout": timed_out,
+        "surviving_group": surviving_group,
         "duration_ms": round((time.monotonic() - start) * 1000),
         "stdout_sha256": digests["stdout"].hexdigest(),
         "stderr_sha256": digests["stderr"].hexdigest(),
@@ -162,7 +177,8 @@ def run(command, *, cwd, env, timeout=60):
 
 
 def accepted(result, mode):
-    if result["timeout"] or result["output_over_limit"]:
+    if (result["timeout"] or result["output_over_limit"] or
+            result.get("surviving_group", False) or result.get("truncated", False)):
         return False
     output = "\n".join(part.strip() for part in (result["stdout"], result["stderr"]) if part.strip())
     if mode == "pass":
@@ -192,6 +208,11 @@ def accepted(result, mode):
 def seal(record):
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return sha256(canonical.encode("utf-8"))
+
+
+def executable_path(name):
+    found = shutil.which(name)
+    return str(Path(found).resolve()) if found is not None else None
 
 
 def execute(root, out, bun, kernel, lean, leanc, *, build_kernel=False, timeout):
@@ -228,7 +249,7 @@ def execute(root, out, bun, kernel, lean, leanc, *, build_kernel=False, timeout)
             raise AuditError("BEND-QSOL-001 source pins or tracked worktree differ")
         for rel in (NEGATIVE, UNSAFE, *(path for _, path in CASES)):
             rec["artifacts"][rel] = file_hash(regular(root, rel))
-        exe = shutil.which(bun)
+        exe = executable_path(bun)
         if exe is None:
             raise AuditError("Bun executable not found: " + bun)
         v = run([exe, "--version"], cwd=root, env=env, timeout=timeout)
@@ -237,8 +258,8 @@ def execute(root, out, bun, kernel, lean, leanc, *, build_kernel=False, timeout)
         if v["timeout"] or v["exit_code"] != 0 or v["stdout"].strip() != BUN_VERSION:
             raise AuditError("Bun version must equal " + BUN_VERSION)
         if build_kernel or lean:
-            ln = shutil.which(lean or "lean")
-            lc = shutil.which(leanc)
+            ln = executable_path(lean or "lean")
+            lc = executable_path(leanc)
             if not ln or not lc:
                 raise AuditError("Lean and leanc are required for a local kernel build or --lean verification")
             v = run([ln, "--version"], cwd=root, env=env, timeout=timeout)
@@ -297,9 +318,9 @@ def execute(root, out, bun, kernel, lean, leanc, *, build_kernel=False, timeout)
         # Force Bend's CLI to run a denial-only kernel. A success here would
         # indicate it bypassed the kernel or ignored its negative verdict.
         denial = out / "deny_kernel"
-        denial.write_text("#!" + sys.executable + "\nimport sys\n"
-                          "print('SOME PROOFS FAIL\\nQSOL forced kernel denial')\n"
-                          "sys.exit(1)\n", encoding="utf-8")
+        denial.write_text("#!/bin/sh\nprintf '%s\\n' 'SOME PROOFS FAIL' "
+                          "'QSOL forced kernel denial'\nexit 1\n",
+                          encoding="utf-8")
         denial.chmod(0o700)
         rec["artifacts"][denial.name] = file_hash(denial)
         step("verdict:forced-kernel-denial",
