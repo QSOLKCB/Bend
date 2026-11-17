@@ -22,6 +22,8 @@ class ProofAuditUnitTests(unittest.TestCase):
         self.assertFalse(audit.accepted(r | {"stderr": "panic"}, "kernel-reject"))
         self.assertFalse(audit.accepted(r | {"stdout": "Error: kernel missing"}, "kernel-reject"))
         self.assertFalse(audit.accepted(r | {"output_over_limit": True}, "kernel-reject"))
+        self.assertFalse(audit.accepted(r, "forced-deny"))
+        self.assertTrue(audit.accepted(r | {"stderr": "QSOL forced kernel denial"}, "forced-deny"))
         self.assertTrue(audit.accepted(r, "source-reject"))
         self.assertFalse(audit.accepted(r | {"stdout": "SOME PROOFS FAIL\nBendTT infrastructure"}, "source-reject"))
 
@@ -86,7 +88,7 @@ class ProofAuditUnitTests(unittest.TestCase):
             root = Path(tmp)
             self.make_sources(root)
             fake_bun = self.fake_tool(root, "bun-fake", '''
-import pathlib, sys
+import os, pathlib, sys
 args = sys.argv[1:]
 if args == ["--version"]:
     print("1.4.0")
@@ -99,6 +101,9 @@ elif any("unsafe_loop" in x for x in args):
 elif "--check-only" in args:
     print("ALL PROOFS CHECK\\nUse --verdict for mathematical validity.")
 elif "--verdict" in args:
+    if "deny_kernel" in os.environ.get("BENDTT", ""):
+        print("SOME PROOFS FAIL\\nQSOL forced kernel denial", file=sys.stderr)
+        sys.exit(1)
     print("ALL PROOFS CHECK")
 elif "-o" in args:
     pathlib.Path(args[-1]).write_text("hello: *1 = *1\\n", encoding="utf-8")
@@ -124,7 +129,7 @@ print("ALL PROOFS CHECK")
     def test_synthetic_pipeline_checks_both_paths(self):
         got = self.simulate_pipeline()
         self.assertEqual(got["status"], "PASS", got["errors"])
-        self.assertEqual(len(got["steps"]), 15)
+        self.assertEqual(len(got["steps"]), 16)
         self.assertTrue(all(x["passed"] for x in got["steps"]))
         self.assertIn("reflexivity.bendtt", got["artifacts"])
 
