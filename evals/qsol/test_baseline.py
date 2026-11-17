@@ -105,8 +105,13 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(json.loads(receipt.read_text())["verdict"], "FAIL")
 
     def test_capture_records_drift_but_does_not_claim_pass(self):
+        pins = Path(self.tmp.name) / "pins.json"
+        pins.write_text(json.dumps(self.pins), encoding="utf-8")
+        receipt = Path(self.tmp.name) / "capture.json"
         self.code.write_text("changed\n", encoding="utf-8")
-        result = audit.collect(self.root, self.pins)
+        self.assertEqual(audit.main(["capture", "--repo", str(self.root),
+                                     "--pins", str(pins), "--output", str(receipt)]), 0)
+        result = json.loads(receipt.read_text(encoding="utf-8"))
         self.assertEqual(result["verdict"], "FAIL")
         self.assertEqual(result["source_commit"], self.initial_head)
 
